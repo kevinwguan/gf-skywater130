@@ -13,12 +13,20 @@ from gdsfactory.component import Component
 import sky130
 from gdsfactory.pdk import get_active_pdk
 from gdsfactory.add_pins import add_instance_label
-from sky130.routing_utils import RouteNetSpec, route_multilayer_3d, route_nets_deterministic_copy
+from sky130.routing_utils import (
+    PinLabelSpec,
+    RouteNetSpec,
+    SKY130_CONFIG,
+    _precompute_port_geometries,
+    label_unrouted_pins,
+    route_multilayer_3d,
+    route_nets_deterministic_copy,
+)
 
 
 OPAMP_SCHEMATIC = """\
 * Schematic netlist for LVS: test_2stage_opamp
-.subckt test_2stage_opamp
+.subckt test_2stage_opamp vdd vss vin_p vin_n stage2_out
 * Topology mirrors extracted layout graph for deterministic LVS closure.
 * NMOS devices share one common source/body rail (vss).
 Xin_p vss vin_p stage1_p vss sky130_fd_pr__nfet_g5v0d10v5 w=0.75 l=0.5
@@ -106,7 +114,8 @@ def test_2stage_opamp(
             name="vss_join_core",
             start=nmos_tail.ports["nmos_tail_SOURCE"],
             stop=nmos_stage2.ports["nmos_stage2_SOURCE"],
-            port_name_prefix="vss_join_core",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="v1_to_stage2",
@@ -136,25 +145,10 @@ def test_2stage_opamp(
             name="pbias_d_to_vdd",
             start=pmos_bias_ref.ports["pmos_bias_ref_DRAIN"],
             stop=pmos_bias_ref.ports["pmos_bias_ref_SOURCE"],
-            port_name_prefix="pbias_d_to_vdd",
+            port_name_prefix="vdd",
+            is_top_level_pin=True,
         ),
     ]
-    for net in critical_nets:
-        before_inst = len(c.insts)
-        route_multilayer_3d(
-            c,
-            start=net.start,
-            stop=net.stop,
-            grid_unit=grid_unit_um,
-            width=0.14,
-            dynamic_width=False,
-            layers_to_avoid=layers_to_avoid,
-            add_segment_ports=add_segment_ports,
-            port_name_prefix=net.port_name_prefix,
-            deterministic=True,
-        )
-        if len(c.insts) <= before_inst:
-            raise RuntimeError(f"[OPAMP] Critical pre-route failed for net '{net.name}'")
 
     # Practical routed core netlist (internal connections only).
     nets = [
@@ -162,79 +156,92 @@ def test_2stage_opamp(
             name="vss_join_bias",
             start=nmos_tail.ports["nmos_tail_SOURCE"],
             stop=nmos_bias_ref.ports["nmos_bias_ref_SOURCE"],
-            port_name_prefix="vss_join_bias",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vss_body_tail",
             start=nmos_tail.ports["nmos_tail_SOURCE"],
             stop=nmos_tail.ports["nmos_tail_BODY"],
-            port_name_prefix="vss_body_tail",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vss_body_stage2",
             start=nmos_stage2.ports["nmos_stage2_SOURCE"],
             stop=nmos_stage2.ports["nmos_stage2_BODY"],
-            port_name_prefix="vss_body_stage2",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vss_body_in_p",
             start=nmos_in_p.ports["nmos_in_p_SOURCE"],
             stop=nmos_in_p.ports["nmos_in_p_BODY"],
-            port_name_prefix="vss_body_in_p",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vss_body_in_n",
             start=nmos_in_n.ports["nmos_in_n_SOURCE"],
             stop=nmos_in_n.ports["nmos_in_n_BODY"],
-            port_name_prefix="vss_body_in_n",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vss_body_bias_ref",
             start=nmos_bias_ref.ports["nmos_bias_ref_SOURCE"],
             stop=nmos_bias_ref.ports["nmos_bias_ref_BODY"],
-            port_name_prefix="vss_body_bias_ref",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vdd_join_stage2_to_bias",
             start=pmos_stage2_load.ports["pmos_stage2_load_SOURCE"],
             stop=pmos_bias_ref.ports["pmos_bias_ref_SOURCE"],
-            port_name_prefix="vdd_join_stage2_to_bias",
+            port_name_prefix="vdd",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vdd_join_loads",
             start=pmos_load_p.ports["pmos_load_p_SOURCE"],
             stop=pmos_load_n.ports["pmos_load_n_SOURCE"],
-            port_name_prefix="vdd_join_loads",
+            port_name_prefix="vdd",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vdd_join_loads_to_stage2",
             start=pmos_load_p.ports["pmos_load_p_SOURCE"],
             stop=pmos_stage2_load.ports["pmos_stage2_load_SOURCE"],
-            port_name_prefix="vdd_join_loads_to_stage2",
+            port_name_prefix="vdd",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vdd_body_stage2_load",
             start=pmos_stage2_load.ports["pmos_stage2_load_SOURCE"],
             stop=pmos_stage2_load.ports["pmos_stage2_load_BODY"],
-            port_name_prefix="vdd_body_stage2_load",
+            port_name_prefix="vdd",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vdd_body_load_p",
             start=pmos_load_p.ports["pmos_load_p_SOURCE"],
             stop=pmos_load_p.ports["pmos_load_p_BODY"],
-            port_name_prefix="vdd_body_load_p",
+            port_name_prefix="vdd",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vdd_body_load_n",
             start=pmos_load_n.ports["pmos_load_n_SOURCE"],
             stop=pmos_load_n.ports["pmos_load_n_BODY"],
-            port_name_prefix="vdd_body_load_n",
+            port_name_prefix="vdd",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vdd_body_bias_ref",
             start=pmos_bias_ref.ports["pmos_bias_ref_SOURCE"],
             stop=pmos_bias_ref.ports["pmos_bias_ref_BODY"],
-            port_name_prefix="vdd_body_bias_ref",
+            port_name_prefix="vdd",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="stage1_node_p",
@@ -259,6 +266,7 @@ def test_2stage_opamp(
             start=nmos_stage2.ports["nmos_stage2_DRAIN"],
             stop=pmos_stage2_load.ports["pmos_stage2_load_DRAIN"],
             port_name_prefix="stage2_out",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="stage2_load_bias",
@@ -267,6 +275,31 @@ def test_2stage_opamp(
             port_name_prefix="stage2_load_bias",
         ),
     ]
+
+    # Pre-compute port geometries for ALL nets (critical + batch) on the
+    # pristine component BEFORE any routing modifies the layout.  This
+    # prevents later KLayout Region extraction from merging route metal
+    # with port polygons, corrupting geometry.
+    all_nets = critical_nets + nets
+    geom_cache = _precompute_port_geometries(c, all_nets, SKY130_CONFIG, 0.14)
+
+    # Route critical nets with fixed-width fallback first.
+    for net in critical_nets:
+        before_inst = len(c.insts)
+        route_multilayer_3d(
+            c,
+            start=net.start,
+            stop=net.stop,
+            grid_unit=grid_unit_um,
+            width=0.14,
+            dynamic_width=False,
+            layers_to_avoid=layers_to_avoid,
+            add_segment_ports=net.is_top_level_pin,
+            port_name_prefix=net.port_name_prefix,
+            deterministic=True,
+        )
+        if len(c.insts) <= before_inst:
+            raise RuntimeError(f"[OPAMP] Critical pre-route failed for net '{net.name}'")
 
     c, _ = route_nets_deterministic_copy(
         c,
@@ -278,7 +311,14 @@ def test_2stage_opamp(
         add_segment_ports=add_segment_ports,
         require_all=True,
         deterministic=True,
+        geom_cache=geom_cache,
     )
+
+    # Label unrouted top-level pins (single-port, no routing needed)
+    label_unrouted_pins(c, [
+        PinLabelSpec(pin_name="vin_p", port=c.insts["nmos_in_p"].ports["nmos_in_p_GATE"]),
+        PinLabelSpec(pin_name="vin_n", port=c.insts["nmos_in_n"].ports["nmos_in_n_GATE"]),
+    ], debug=True)
 
     add_instance_label(c, c.insts["nmos_in_p"], instance_name="nmos_in_p")
     add_instance_label(c, c.insts["nmos_in_n"], instance_name="nmos_in_n")
@@ -308,8 +348,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     c = test_2stage_opamp(
-        component_name="test_2stage_opamp",
-        add_segment_ports=False,
+        component_name="test_2stage_opamp_inst",
+        add_segment_ports=True,
         routing_half_extent=35.0,
         grid_unit_um=1.0,
     )

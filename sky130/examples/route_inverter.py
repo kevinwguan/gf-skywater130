@@ -17,9 +17,9 @@ from sky130.routing_utils import RouteNetSpec, route_nets_deterministic_copy
 
 INVERTER_SCHEMATIC = """\
 * Schematic netlist for LVS: test_inverter
-.subckt test_inverter
-X0 nmos_SOURCE pmos_GATE pmos_DRAIN nmos_SOURCE sky130_fd_pr__nfet_g5v0d10v5 w=0.75 l=0.5
-X1 pmos_SOURCE pmos_GATE pmos_DRAIN pmos_SOURCE sky130_fd_pr__pfet_g5v0d10v5 w=0.75 l=0.5
+.subckt test_inverter vdd vss in out
+X0 out in vss vss sky130_fd_pr__nfet_g5v0d10v5 w=0.75 l=0.5
+X1 out in vdd vdd sky130_fd_pr__pfet_g5v0d10v5 w=0.75 l=0.5
 .ends test_inverter
 """
 
@@ -50,6 +50,8 @@ def test_inverter(
     # Important to add ports ONLY after finished moving instances
     c.add_ports(instance1)
     c.add_ports(instance2)
+    # Always ensure the instance ports are added before routing
+    c.pprint_ports()
 
     # Add routing area markers to ensure grid extends beyond the obstacle
     routing_area_layer = (235, 4)  # Dummy layer for grid extent
@@ -78,24 +80,28 @@ def test_inverter(
             start=instance1.ports["pmos_DRAIN"],
             stop=instance2.ports["nmos_DRAIN"],
             port_name_prefix="out",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="in",
             start=instance1.ports["pmos_GATE"],
             stop=instance2.ports["nmos_GATE"],
             port_name_prefix="in",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vdd",
             start=instance1.ports["pmos_SOURCE"],
             stop=instance1.ports["pmos_BODY"],
             port_name_prefix="vdd",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vss",
             start=instance2.ports["nmos_SOURCE"],
             stop=instance2.ports["nmos_BODY"],
             port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
     ]
 
@@ -132,8 +138,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     c = test_inverter(
-        component_name="test_inverter",
-        add_segment_ports=False,
+        component_name="test_inverter_inst",
+        add_segment_ports=True,
         pmos_offset=(0.0, 5.0),
         mirror_pmos=True,
     )

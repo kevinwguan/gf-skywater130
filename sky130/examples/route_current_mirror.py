@@ -13,12 +13,12 @@ from gdsfactory.component import Component
 import sky130
 from gdsfactory.pdk import get_active_pdk
 from gdsfactory.add_pins import add_instance_label
-from sky130.routing_utils import RouteNetSpec, route_nets_deterministic_copy
+from sky130.routing_utils import PinLabelSpec, RouteNetSpec, label_unrouted_pins, route_nets_deterministic_copy
 
 
 CURRENT_MIRROR_SCHEMATIC = """\
 * Schematic netlist for LVS: test_current_mirror
-.subckt test_current_mirror
+.subckt test_current_mirror vss gate_bot gate_top nref_top_d nout_top_d
 Xref_bot stack_ref gate_bot vss vss sky130_fd_pr__nfet_g5v0d10v5 w=0.75 l=0.5
 Xref_top nref_top_d gate_top stack_ref vss sky130_fd_pr__nfet_g5v0d10v5 w=0.75 l=0.5
 Xout_bot stack_out gate_bot vss vss sky130_fd_pr__nfet_g5v0d10v5 w=0.75 l=0.5
@@ -34,7 +34,7 @@ def test_current_mirror(
     grid_unit_um: float = 1.0,
     col_pitch_um: float = 14.0,
     row_pitch_um: float = 14.0,
-    dynamic_width: bool = False,
+    dynamic_width: bool = True,
 ) -> Component:
     pdk = get_active_pdk()
     c = Component(component_name)
@@ -93,46 +93,53 @@ def test_current_mirror(
             port_name_prefix="stack_out",
         ),
         RouteNetSpec(
-            name="bias_bot_gate",
+            name="gate_bot",
             start=nmos_ref_bot.ports["nmos_ref_bot_GATE"],
             stop=nmos_out_bot.ports["nmos_out_bot_GATE"],
-            port_name_prefix="bias_bot_gate",
+            port_name_prefix="gate_bot",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
-            name="bias_top_gate",
+            name="gate_top",
             start=nmos_ref_top.ports["nmos_ref_top_GATE"],
             stop=nmos_out_top.ports["nmos_out_top_GATE"],
-            port_name_prefix="bias_top_gate",
+            port_name_prefix="gate_top",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vss_src_join",
             start=nmos_ref_bot.ports["nmos_ref_bot_SOURCE"],
             stop=nmos_out_bot.ports["nmos_out_bot_SOURCE"],
-            port_name_prefix="vss_src_join",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vss_body_ref_bot",
             start=nmos_ref_bot.ports["nmos_ref_bot_SOURCE"],
             stop=nmos_ref_bot.ports["nmos_ref_bot_BODY"],
-            port_name_prefix="vss_body_ref_bot",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vss_body_out_bot",
             start=nmos_out_bot.ports["nmos_out_bot_SOURCE"],
             stop=nmos_out_bot.ports["nmos_out_bot_BODY"],
-            port_name_prefix="vss_body_out_bot",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vss_body_ref_top",
             start=nmos_ref_bot.ports["nmos_ref_bot_SOURCE"],
             stop=nmos_ref_top.ports["nmos_ref_top_BODY"],
-            port_name_prefix="vss_body_ref_top",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
         RouteNetSpec(
             name="vss_body_out_top",
             start=nmos_out_bot.ports["nmos_out_bot_SOURCE"],
             stop=nmos_out_top.ports["nmos_out_top_BODY"],
-            port_name_prefix="vss_body_out_top",
+            port_name_prefix="vss",
+            is_top_level_pin=True,
         ),
     ]
 
@@ -146,6 +153,12 @@ def test_current_mirror(
         require_all=True,
         deterministic=True,
     )
+
+    # Label unrouted top-level pins (single-port, no routing needed)
+    label_unrouted_pins(c, [
+        PinLabelSpec(pin_name="nref_top_d", port=c.insts["nmos_ref_top"].ports["nmos_ref_top_DRAIN"]),
+        PinLabelSpec(pin_name="nout_top_d", port=c.insts["nmos_out_top"].ports["nmos_out_top_DRAIN"]),
+    ], debug=True)
 
     # Reacquire instances after routing attempts to avoid stale reference handles.
     add_instance_label(c, c.insts["nmos_ref_bot"], instance_name="nmos_ref_bot")
@@ -171,13 +184,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     c = test_current_mirror(
-        component_name="test_current_mirror",
-        add_segment_ports=False,
+        component_name="test_current_mirror_inst",
+        add_segment_ports=True,
         routing_half_extent=25.0,
         grid_unit_um=1.0,
         col_pitch_um=14.0,
         row_pitch_um=14.0,
-        dynamic_width=False,
+        dynamic_width=True,
     )
     c.flatten()
     c.pprint_ports()
