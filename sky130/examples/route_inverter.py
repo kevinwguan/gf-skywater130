@@ -144,12 +144,29 @@ if __name__ == "__main__":
         mirror_pmos=True,
     )
     c.flatten()
+    c.remove_layers(layers=[(235, 4)])
     c.pprint_ports()
     c.show()
     gds_path = Path(args.out_gds)
     gds_path.parent.mkdir(parents=True, exist_ok=True)
     c.write_gds(str(gds_path), with_metadata=False)
     print(f"[OK] Wrote {gds_path}")
+    # Save layout image
+    try:
+        from sky130.examples.stress_test import _plot_light
+        import matplotlib
+        matplotlib.use("Agg")
+        img_dir = gds_path.parent / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        fig = _plot_light(c)
+        if fig is not None:
+            img_path = img_dir / (gds_path.stem + ".png")
+            fig.savefig(str(img_path), dpi=200, bbox_inches="tight")
+            import matplotlib.pyplot as plt
+            plt.close(fig)
+            print(f"[OK] Saved image {img_path}")
+    except Exception as e:
+        print(f"[WARN] Image save error: {e}")
     if args.skip_lvs:
         print("[INFO] Skipping LVS (--skip-lvs)")
     else:

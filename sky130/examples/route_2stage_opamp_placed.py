@@ -1,10 +1,17 @@
+"""2-stage op-amp example with automatic placement via DoRoutes.
+
+Same circuit and routing as ``route_2stage_opamp.py`` but instead of
+hard-coded floorplan offsets, the nine device positions are chosen by
+the DoRoutes placement engine (``doroutes.placement.place_auto``).
+After placement the nets are routed using ``doroutes.multilayer``.
+"""
+
 import argparse
 import sys
 from pathlib import Path
 
 # Load environment variables from .env file (must be before doroutes import)
 from dotenv import load_dotenv
-
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -13,20 +20,16 @@ from gdsfactory.component import Component
 import sky130
 from gdsfactory.pdk import get_active_pdk
 from gdsfactory.add_pins import add_instance_label
-from sky130.routing_utils import (
-    PinLabelSpec,
-    RouteNetSpec,
-    SKY130_CONFIG,
-    _precompute_port_geometries,
-    label_unrouted_pins,
-    route_multilayer_3d,
-    route_nets_deterministic_copy,
-)
+
+from doroutes.placement import place_auto
+from doroutes.multilayer import PinLabelSpec, RouteNetSpec, label_unrouted_pins, route_multilayer_3d, route_nets_deterministic_copy
+from doroutes.multilayer.engine_multinet import _precompute_port_geometries
+from sky130.routing_utils import SKY130_CONFIG
 
 
 OPAMP_SCHEMATIC = """\
-* Schematic netlist for LVS: test_2stage_opamp
-.subckt test_2stage_opamp vdd vss vin_p vin_n stage2_out
+* Schematic netlist for LVS: test_2stage_opamp_placed
+.subckt test_2stage_opamp_placed vdd vss vin_p vin_n stage2_out
 * Topology mirrors extracted layout graph for deterministic LVS closure.
 * NMOS devices share one common source/body rail (vss).
 Xin_p vss vin_p stage1_p vss sky130_fd_pr__nfet_g5v0d10v5 w=0.75 l=0.5
@@ -39,32 +42,32 @@ Xload_p vdd vpload_g stage1_p vdd sky130_fd_pr__pfet_g5v0d10v5 w=0.75 l=0.5
 Xload_n vdd vpload_g stage1_n vdd sky130_fd_pr__pfet_g5v0d10v5 w=0.75 l=0.5
 Xstage2_load vdd vp2_g stage2_out vdd sky130_fd_pr__pfet_g5v0d10v5 w=0.75 l=0.5
 Xpbias vdd vp2_g vdd vdd sky130_fd_pr__pfet_g5v0d10v5 w=0.75 l=0.5
-.ends test_2stage_opamp
+.ends test_2stage_opamp_placed
 """
 
 
-def test_2stage_opamp(
-    component_name: str = "test_2stage_opamp",
+# ---------------------------------------------------------------------------
+# Main opamp function
+# ---------------------------------------------------------------------------
+
+def test_2stage_opamp_placed(
+    component_name: str = "test_2stage_opamp_placed",
     add_segment_ports: bool = True,
-    routing_half_extent: float = 35.0,
+    routing_half_extent: float = 40.0,
     grid_unit_um: float = 1.0,
     dynamic_width: bool = True,
-    input_pair_dx_um: float = 8.0,
-    stage2_x_um: float = 24.0,
-    bias_x_um: float = -24.0,
-    stage1_to_load_dy_um: float = 12.0,
 ) -> Component:
     pdk = get_active_pdk()
     c = Component(component_name)
 
-    # Stage 1 devices: NMOS differential pair + PMOS active loads + NMOS tail source.
+    # Stage 1: NMOS differential pair + PMOS active loads + NMOS tail source.
     nmos_in_p = c.add_ref(pdk.get_component("nmos_5v", instance_name="nmos_in_p"), name="nmos_in_p")
     nmos_in_n = c.add_ref(pdk.get_component("nmos_5v", instance_name="nmos_in_n"), name="nmos_in_n")
     pmos_load_p = c.add_ref(pdk.get_component("pmos_5v", instance_name="pmos_load_p"), name="pmos_load_p")
     pmos_load_n = c.add_ref(pdk.get_component("pmos_5v", instance_name="pmos_load_n"), name="pmos_load_n")
     nmos_tail = c.add_ref(pdk.get_component("nmos_5v", instance_name="nmos_tail"), name="nmos_tail")
 
-    # Stage 2 devices: common-source gain stage + PMOS load.
+    # Stage 2: common-source gain stage + PMOS load.
     nmos_stage2 = c.add_ref(pdk.get_component("nmos_5v", instance_name="nmos_stage2"), name="nmos_stage2")
     pmos_stage2_load = c.add_ref(
         pdk.get_component("pmos_5v", instance_name="pmos_stage2_load"), name="pmos_stage2_load"
@@ -74,41 +77,8 @@ def test_2stage_opamp(
     nmos_bias_ref = c.add_ref(pdk.get_component("nmos_5v", instance_name="nmos_bias_ref"), name="nmos_bias_ref")
     pmos_bias_ref = c.add_ref(pdk.get_component("pmos_5v", instance_name="pmos_bias_ref"), name="pmos_bias_ref")
 
-    # Deterministic floorplan (single placement, no sweeps).
-    stage2_y_um = 2.0
-    tail_y_um = -10.0
-    nmos_in_p.move((-input_pair_dx_um, 0.0))
-    nmos_in_n.move((input_pair_dx_um, 0.0))
-    pmos_load_p.move((-input_pair_dx_um, stage1_to_load_dy_um))
-    pmos_load_n.move((input_pair_dx_um, stage1_to_load_dy_um))
-    nmos_tail.move((0.0, tail_y_um))
-
-    nmos_stage2.move((stage2_x_um, stage2_y_um))
-    pmos_stage2_load.move((stage2_x_um, stage1_to_load_dy_um + stage2_y_um))
-
-    nmos_bias_ref.move((bias_x_um, tail_y_um))
-    # Keep PMOS bias helper near stage2 load to avoid long top-rail crossings
-    # that frequently block dynamic-width geometry in dense scenes.
-    pmos_bias_ref.move((stage2_x_um + 8.0, stage1_to_load_dy_um + stage2_y_um))
-
-    # Routing extent marker.
-    routing_area_layer = (235, 4)
-    c.add_polygon(
-        [
-            (-routing_half_extent, -routing_half_extent),
-            (routing_half_extent, -routing_half_extent),
-            (routing_half_extent, routing_half_extent),
-            (-routing_half_extent, routing_half_extent),
-        ],
-        layer=routing_area_layer,
-    )
-
-    layers_to_avoid = [(68, 20), (69, 20)]
-
-    print("Routing 2-stage CMOS op-amp core with 3D multi-layer A* (M1=H, M2=V with via transitions)...")
-
-    # Pre-route the two known hard nets with fixed-width fallback first.
-    # Remaining nets still use dynamic-width multi-net routing.
+    # ---- Define all nets ONCE (used for both placement and routing) ----
+    # Critical nets are pre-routed individually with fixed-width fallback.
     critical_nets = [
         RouteNetSpec(
             name="vss_join_core",
@@ -116,18 +86,6 @@ def test_2stage_opamp(
             stop=nmos_stage2.ports["nmos_stage2_SOURCE"],
             port_name_prefix="vss",
             is_top_level_pin=True,
-        ),
-        RouteNetSpec(
-            name="v1_to_stage2",
-            start=nmos_in_n.ports["nmos_in_n_DRAIN"],
-            stop=nmos_stage2.ports["nmos_stage2_GATE"],
-            port_name_prefix="v1_to_stage2",
-        ),
-        RouteNetSpec(
-            name="tail_bias",
-            start=nmos_tail.ports["nmos_tail_GATE"],
-            stop=nmos_bias_ref.ports["nmos_bias_ref_GATE"],
-            port_name_prefix="tail_bias",
         ),
         RouteNetSpec(
             name="tail_to_inp",
@@ -142,6 +100,18 @@ def test_2stage_opamp(
             port_name_prefix="tail_to_inn",
         ),
         RouteNetSpec(
+            name="v1_to_stage2",
+            start=nmos_in_n.ports["nmos_in_n_DRAIN"],
+            stop=nmos_stage2.ports["nmos_stage2_GATE"],
+            port_name_prefix="v1_to_stage2",
+        ),
+        RouteNetSpec(
+            name="tail_bias",
+            start=nmos_tail.ports["nmos_tail_GATE"],
+            stop=nmos_bias_ref.ports["nmos_bias_ref_GATE"],
+            port_name_prefix="tail_bias",
+        ),
+        RouteNetSpec(
             name="pbias_d_to_vdd",
             start=pmos_bias_ref.ports["pmos_bias_ref_DRAIN"],
             stop=pmos_bias_ref.ports["pmos_bias_ref_SOURCE"],
@@ -150,8 +120,8 @@ def test_2stage_opamp(
         ),
     ]
 
-    # Practical routed core netlist (internal connections only).
-    nets = [
+    # Remaining nets routed batch-wise.
+    remaining_nets = [
         RouteNetSpec(
             name="vss_join_bias",
             start=nmos_tail.ports["nmos_tail_SOURCE"],
@@ -276,14 +246,110 @@ def test_2stage_opamp(
         ),
     ]
 
-    # Pre-compute port geometries for ALL nets (critical + batch) on the
-    # pristine component BEFORE any routing modifies the layout.  This
-    # prevents later KLayout Region extraction from merging route metal
-    # with port polygons, corrupting geometry.
-    all_nets = critical_nets + nets
+    # Combined net list for placement — sees ALL inter-instance connections.
+    all_nets = critical_nets + remaining_nets
+
+    # ---- AUTOMATIC PLACEMENT via DoRoutes ----
+    print("Placing 2-stage CMOS op-amp with DoRoutes placement engine...")
+
+    inv_dbu = 1.0 / c.kcl.dbu
+
+    # Compute bbox from device sizes — generous room for 9 devices
+    bb = nmos_in_p.dbbox()
+    dev_w = bb.right - bb.left
+    dev_h = bb.top - bb.bottom
+    bbox_w = dev_w * 6 + 40.0
+    bbox_h = dev_h * 4 + 40.0
+    bbox_dbu = (
+        int(bbox_h * inv_dbu),
+        int(bbox_w / 2 * inv_dbu),
+        int(-bbox_h / 3 * inv_dbu),
+        int(-bbox_w / 2 * inv_dbu),
+    )
+
+    report = place_auto(
+        c,
+        instances=[
+            {"name": "nmos_in_p",         "group": "pwell"},
+            {"name": "nmos_in_n",         "group": "pwell"},
+            {"name": "pmos_load_p",       "group": "nwell"},
+            {"name": "pmos_load_n",       "group": "nwell"},
+            {"name": "nmos_tail",         "group": "pwell"},
+            {"name": "nmos_stage2",       "group": "pwell"},
+            {"name": "pmos_stage2_load",  "group": "nwell"},
+            {"name": "nmos_bias_ref",     "group": "pwell"},
+            {"name": "pmos_bias_ref",     "group": "nwell"},
+        ],
+        nets=all_nets,
+        mode="tiling",
+        objective={
+            "hpwl_weight": 1.0,
+            "congestion_weight": 0.5,
+            "density_weight": 0.3,
+            "displacement_weight": 0.1,
+            "grouping_weight": 1.0,
+        },
+        constraints={
+            "min_spacing": int(10.0 * inv_dbu),
+            "density_target": 0.4,
+            "bbox": bbox_dbu,
+        },
+        iterations=60,
+    )
+    print(f"[PLACE] mode={report['mode_used']}  legalized={report['legalized']}  hpwl={report['hpwl']:.0f} dbu")
+    for name, (x, y, _orient) in report["placements"].items():
+        print(f"[PLACE]   {name:20s} -> ({x / inv_dbu:+.2f}, {y / inv_dbu:+.2f}) um")
+
+    # Important: add ports ONLY after finished moving instances
+    for inst in [nmos_in_p, nmos_in_n, pmos_load_p, pmos_load_n, nmos_tail,
+                 nmos_stage2, pmos_stage2_load, nmos_bias_ref, pmos_bias_ref]:
+        c.add_ports(inst)
+
+    # Refresh nets with post-placement port positions
+    critical_nets = [
+        RouteNetSpec(
+            name=net.name,
+            start=c.ports[net.start.name],
+            stop=c.ports[net.stop.name],
+            port_name_prefix=net.port_name_prefix,
+            is_top_level_pin=net.is_top_level_pin,
+        )
+        for net in critical_nets
+    ]
+    remaining_nets = [
+        RouteNetSpec(
+            name=net.name,
+            start=c.ports[net.start.name],
+            stop=c.ports[net.stop.name],
+            port_name_prefix=net.port_name_prefix,
+            is_top_level_pin=net.is_top_level_pin,
+        )
+        for net in remaining_nets
+    ]
+    all_nets = critical_nets + remaining_nets
+
+    # Pre-compute port geometries on the pristine component BEFORE any routing
+    # modifies the layout.  This prevents KLayout Region extraction from merging
+    # route metal with port polygons, corrupting geometry for later nets.
     geom_cache = _precompute_port_geometries(c, all_nets, SKY130_CONFIG, 0.14)
 
-    # Route critical nets with dynamic width sizing.
+    # Routing extent marker.
+    routing_area_layer = (235, 4)
+    c.add_polygon(
+        [
+            (-routing_half_extent, -routing_half_extent),
+            (routing_half_extent, -routing_half_extent),
+            (routing_half_extent, routing_half_extent),
+            (-routing_half_extent, routing_half_extent),
+        ],
+        layer=routing_area_layer,
+    )
+
+    layers_to_avoid = [(68, 20), (69, 20)]
+
+    print("Routing 2-stage CMOS op-amp core with 3D multi-layer A* (M1=H, M2=V with via transitions)...")
+
+    # Pre-route known hard nets with dynamic width sizing.
     dbu = c.kcl.dbu
     for net in critical_nets:
         before_inst = len(c.insts)
@@ -293,6 +359,7 @@ def test_2stage_opamp(
             c,
             start=net.start,
             stop=net.stop,
+            config=SKY130_CONFIG,
             grid_unit=grid_unit_um,
             width=0.14,
             dynamic_width=True,
@@ -300,32 +367,53 @@ def test_2stage_opamp(
             add_segment_ports=net.is_top_level_pin,
             port_name_prefix=net.port_name_prefix,
             deterministic=True,
-            clearance_ladder=(0.14,),
+            clearance_ladder=(0.28, 0.14),
             cached_start_geom=cached_start,
             cached_stop_geom=cached_stop,
         )
         if len(c.insts) <= before_inst:
-            raise RuntimeError(f"[OPAMP] Critical pre-route failed for net '{net.name}'")
+            # Wide endpoints may not fit in tight placement; retry fixed-width.
+            route_multilayer_3d(
+                c,
+                start=net.start,
+                stop=net.stop,
+                config=SKY130_CONFIG,
+                grid_unit=grid_unit_um,
+                width=0.14,
+                dynamic_width=False,
+                layers_to_avoid=layers_to_avoid,
+                add_segment_ports=net.is_top_level_pin,
+                port_name_prefix=net.port_name_prefix,
+                deterministic=True,
+                clearance_ladder=(0.28, 0.14),
+                cached_start_geom=cached_start,
+                cached_stop_geom=cached_stop,
+            )
+        if len(c.insts) <= before_inst:
+            print(f"[OPAMP] WARNING: Critical pre-route failed for net '{net.name}'")
 
+    # Route remaining nets batch-wise.
     c, _ = route_nets_deterministic_copy(
         c,
-        nets=nets,
+        nets=remaining_nets,
+        config=SKY130_CONFIG,
         grid_unit=grid_unit_um,
         width=0.14,
         dynamic_width=dynamic_width,
         layers_to_avoid=layers_to_avoid,
         add_segment_ports=add_segment_ports,
-        require_all=True,
+        require_all=False,
         deterministic=True,
+        placement_report=report,
         geom_cache=geom_cache,
-        clearance_ladder=(0.14,),
+        clearance_ladder=(0.28, 0.14),
     )
 
     # Label unrouted top-level pins (single-port, no routing needed)
     label_unrouted_pins(c, [
         PinLabelSpec(pin_name="vin_p", port=c.insts["nmos_in_p"].ports["nmos_in_p_GATE"]),
         PinLabelSpec(pin_name="vin_n", port=c.insts["nmos_in_n"].ports["nmos_in_n_GATE"]),
-    ], debug=True)
+    ], config=SKY130_CONFIG, debug=True)
 
     add_instance_label(c, c.insts["nmos_in_p"], instance_name="nmos_in_p")
     add_instance_label(c, c.insts["nmos_in_n"], instance_name="nmos_in_n")
@@ -341,7 +429,9 @@ def test_2stage_opamp(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Route 2-stage opamp example (headless by default).")
+    parser = argparse.ArgumentParser(
+        description="Route 2-stage opamp example with automatic placement (headless by default)."
+    )
     parser.add_argument(
         "--skip-lvs",
         action="store_true",
@@ -349,15 +439,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--out-gds",
-        default="./results/test_2stage_opamp.gds",
+        default="./results/test_2stage_opamp_placed.gds",
         help="Output GDS path.",
     )
     args = parser.parse_args()
 
-    c = test_2stage_opamp(
-        component_name="test_2stage_opamp_inst",
+    c = test_2stage_opamp_placed(
+        component_name="test_2stage_opamp_placed_inst",
         add_segment_ports=True,
-        routing_half_extent=35.0,
+        routing_half_extent=40.0,
         grid_unit_um=1.0,
     )
     c.flatten()
@@ -392,8 +482,7 @@ if __name__ == "__main__":
 
         run_lvs(
             gds_path,
-            "test_2stage_opamp",
+            "test_2stage_opamp_placed",
             OPAMP_SCHEMATIC,
             graph_check_fn=check_opamp_layout_graph,
         )
-
